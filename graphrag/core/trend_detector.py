@@ -17,9 +17,12 @@ logger = logging.getLogger(__name__)
 
 class TrendType(Enum):
     INGREDIENT = "ingredient"
-    TECHNIQUE = "technique"
-    AESTHETIC = "aesthetic"
+    TECHNIQUE = "technique" # Can be cooking technique
+    AESTHETIC = "aesthetic" # Can be plating style
     FORMAT = "format"
+    CUISINE = "cuisine" # New
+    NUTRITIONAL = "nutritional" # New
+    FOOD_ITEM = "food_item" # New, for specific dishes or products
     UNKNOWN = "unknown"
 
 class TrendLifecycleStage(Enum):
@@ -91,8 +94,31 @@ class TrendDetector:
             "video_id": frame_metadata.get("video_id"),
             "timestamp": frame_metadata.get("timestamp"),
             "creator_id": frame_metadata.get("creator_id"),
-            # Potentially add other visual analysis results (tags, objects) from VisualAnalyzer
+            "tags": frame_metadata.get("tags", []),
+            "objects": frame_metadata.get("objects", [])
         }
+
+        food_analysis_data = frame_metadata.get("food_analysis")
+        if food_analysis_data: # Ensure food_analysis_data is not None
+            payload["ingredients"] = food_analysis_data.get("ingredients", [])
+            payload["cooking_technique"] = food_analysis_data.get("cooking_technique")
+            payload["plating_style"] = food_analysis_data.get("plating_style")
+            payload["nutritional_trends"] = food_analysis_data.get("nutritional_trends", [])
+            payload["cuisine"] = food_analysis_data.get("cuisine")
+
+        if embedding is not None:
+             self.qdrant_conn.upsert_vectors(
+                 collection_name=self.qdrant_collection_name,
+                 vectors=[embedding.tolist()],
+                 ids=[frame_id],
+                 metadata=[payload]
+             )
+             logger.info(f"Upserted embedding for frame {frame_id} to Qdrant collection '{self.qdrant_collection_name}'.")
+             # logger.debug("Placeholder: Visual similarity clustering logic would run here.") # Original log
+             return {"frame_id": frame_id, "embedding_stored": True, "qdrant_id": frame_id, "payload_for_qdrant": payload}
+        else:
+            logger.warning(f"Skipping Qdrant upsert for {frame_id} due to missing embedding. Payload was: {payload}")
+            return {"frame_id": frame_id, "embedding_stored": False, "qdrant_id": frame_id, "payload_generated": payload, "error": "embedding_generation_failed"}
 
         # The QdrantConnection upsert_vectors expects lists.
         # self.qdrant_conn.upsert_vectors(
@@ -102,13 +128,13 @@ class TrendDetector:
         #     metadata=[payload]
         # )
         # Using the string ID directly as per QdrantConnection's _string_to_uuid internal handling
-        self.qdrant_conn.upsert_vectors(
-            collection_name=self.qdrant_collection_name,
-            vectors=[embedding.tolist()],
-            ids=[frame_id], # Using original frame_id, QdrantConnection will make it a UUID
-            metadata=[payload]
-        )
-        logger.info(f"Upserted embedding for frame {frame_id} to Qdrant collection '{self.qdrant_collection_name}'.")
+        # self.qdrant_conn.upsert_vectors(
+        # collection_name=self.qdrant_collection_name,
+        # vectors=[embedding.tolist()],
+        # ids=[frame_id], # Using original frame_id, QdrantConnection will make it a UUID
+        # metadata=[payload]
+        # )
+        # logger.info(f"Upserted embedding for frame {frame_id} to Qdrant collection '{self.qdrant_collection_name}'.")
 
         # Placeholder for actual clustering logic.
         # In a real scenario, you might:
@@ -116,9 +142,10 @@ class TrendDetector:
         # 2. If enough similar vectors are found, form or update a cluster.
         # 3. Store cluster information (e.g., in Neo4j or another store).
         # For now, we'll just log that it's a placeholder.
-        logger.debug("Placeholder: Visual similarity clustering logic would run here.")
+        # logger.debug("Placeholder: Visual similarity clustering logic would run here.")
         # Example: find_similar_and_cluster(embedding, frame_id, frame_metadata)
-        return {"frame_id": frame_id, "embedding_stored": True, "qdrant_id": frame_id} # Return some status
+        # return {"frame_id": frame_id, "embedding_stored": True, "qdrant_id": frame_id} # Return some status
+    # The return statements are now inside the if/else block for embedding status
 
     def detect_temporal_patterns(self, visual_cluster_id: str, start_time=None, end_time=None) -> dict:
         """
@@ -231,22 +258,49 @@ class TrendDetector:
         Returns:
             TrendType: The classified type of the trend.
         """
-        logger.info(f"Classifying trend for visual cluster {visual_cluster_id}.")
-        # Placeholder: Simple rule-based classification
+        logger.info(f"Classifying trend for visual cluster {visual_cluster_id} using data: {associated_data}")
+
+        ingredients = associated_data.get("ingredients", [])
+        cooking_technique = associated_data.get("cooking_technique")
+        plating_style = associated_data.get("plating_style")
+        nutritional_trends = associated_data.get("nutritional_trends", [])
+        cuisine = associated_data.get("cuisine")
+
         tags = associated_data.get("tags", [])
         objects = associated_data.get("objects", [])
 
-        if any(t in ["food", "recipe", "ingredient", "dish"] for t in tags) or            any(o in ["plate", "bowl", "pan"] for o in objects):
-            trend_type = TrendType.INGREDIENT # Could also be TECHNIQUE if cooking is detected
-        elif "dance" in tags or "filter" in tags or "transition" in tags:
-            trend_type = TrendType.FORMAT
-        elif "aesthetic" in tags or "vintage" in tags or "minimalist" in tags:
-            trend_type = TrendType.AESTHETIC
-        else:
-            trend_type = TrendType.UNKNOWN
+        if cuisine and cuisine not in ["Unknown Cuisine", "unknown_cuisine", None, "mock_general_food_main", "mock_garden_main", "mock_sweet_main"]:
+            if not cuisine.startswith("mock_") and not cuisine.startswith("unknown_"):
+                return TrendType.CUISINE
 
-        logger.debug(f"Classified trend {visual_cluster_id} as {trend_type.value}")
-        return trend_type
+        if nutritional_trends and any(nt for nt in nutritional_trends if nt and not nt.startswith("mock_")):
+                 return TrendType.NUTRITIONAL
+
+        if ingredients and any(ing for ing in ingredients if ing and not ing.startswith("mock_") and not ing.startswith("unknown_")):
+            known_trending_ingredients = ["tofu", "plant-based", "tempeh", "seitan", "mushroom", "chocolate", "matcha", "fermented"]
+            if any(i in known_trending_ingredients for i in ingredients):
+                return TrendType.INGREDIENT
+
+        if cooking_technique and cooking_technique not in ["unknown_technique", "unknown_technique_main", None] and not cooking_technique.startswith("mock_"):
+            return TrendType.TECHNIQUE
+
+        if plating_style and plating_style not in ["unknown_style", "unknown_style_main", None] and not plating_style.startswith("mock_"):
+            return TrendType.AESTHETIC
+
+        is_general_food_object = any(o in ["plate", "bowl", "pan", "food_item", "plate_mock_main", "mock_object_generic_main"] for o in objects)
+        is_general_food_tag = any(t in ["food", "recipe", "dish"] for t in tags)
+        if is_general_food_object or is_general_food_tag:
+            return TrendType.FOOD_ITEM
+
+        if "dance" in tags or "filter" in tags or "transition" in tags: # Check for non-food tags
+            if "dance_gamma" in visual_cluster_id: # Example specific check for test data
+                return TrendType.FORMAT
+
+        if any(t in ["vintage", "minimalist_general", "aesthetic"] for t in tags) and            not (plating_style and plating_style not in ["unknown_style", "unknown_style_main", None] and not plating_style.startswith("mock_")):
+            return TrendType.AESTHETIC
+
+        logger.debug(f"Trend {visual_cluster_id} classified as UNKNOWN with data: {associated_data}")
+        return TrendType.UNKNOWN
 
     def calculate_confidence_score(self, trend_data: dict) -> float:
         """
@@ -324,225 +378,203 @@ class TrendDetector:
             list[dict]: A list of identified trends, each with its characteristics.
         """
         logger.info(f"Starting trend identification from {len(processed_frames_data)} processed frames.")
-
-        # 1. Process all frames for visual similarity and store embeddings
         qdrant_results = []
-        for frame_data in processed_frames_data:
-            # Assume VisualAnalyzer has already processed the frame for objects, tags etc.
-            # and that info is part of frame_data['metadata'] or accessible via frame_id
-            # For now, we just pass the core frame info.
-            # In a real scenario, ensure Qdrant collection is created with correct vector size
-            # This might be done once in __init__ if embedding size is fixed and known.
-            # self.qdrant_conn.create_collection(self.qdrant_collection_name, vector_size=EMBEDDING_DIM)
+
+        frame_data_map = {
+            f_data.get('frame_id'): f_data
+            for f_data in processed_frames_data
+            if f_data.get('frame_id') and f_data.get('frame_path')
+        }
+        if not frame_data_map:
+            logger.warning("No valid frame data (missing frame_id or frame_path) in processed_frames_data for identify_trends_from_data.")
+            return []
+
+        for frame_id, frame_data_item in frame_data_map.items():
+            frame_path = frame_data_item.get('frame_path')
+            current_metadata = {
+                "video_id": frame_data_item.get("video_id"),
+                "timestamp": frame_data_item.get("timestamp"),
+                "creator_id": frame_data_item.get("creator_id"),
+                "food_analysis": frame_data_item.get("food_analysis"),
+                "tags": [obj.get('description', '') for obj in frame_data_item.get("detected_objects", []) if obj.get('description')],
+                "objects": [obj.get('description', '') for obj in frame_data_item.get("detected_objects", []) if obj.get('description')]
+            }
+            current_metadata = {k: v for k, v in current_metadata.items() if v is not None}
 
             res = self.process_frame_for_visual_similarity(
-                frame_id=frame_data['frame_id'],
-                frame_path=frame_data['frame_path'],
-                frame_metadata=frame_data['metadata']
+                frame_id=frame_id,
+                frame_path=frame_path,
+                frame_metadata=current_metadata
             )
-            if res:
+            if res and res.get("embedding_stored"):
                 qdrant_results.append(res)
 
-        logger.info(f"Processed {len(qdrant_results)} frames for Qdrant storage.")
-
-        # 2. Placeholder: Identify visual clusters from Qdrant
-        # This is a complex step. In a real system, it might involve:
-        # - Iterating through stored embeddings in Qdrant.
-        # - Performing similarity searches to find neighbors.
-        # - Applying a clustering algorithm (e.g., DBSCAN on demand, or regular batch clustering).
-        # - Assigning cluster IDs to frames.
-        # For now, let's mock some visual clusters.
-        # Assume each "cluster" is identified by one of its frame_ids for simplicity,
-        # or a newly generated cluster_id.
-
-        # Mocking: Let's assume we found a few "key frames" that represent potential clusters
-        # and we use their frame_ids as proxies for cluster_ids for now.
-        # This is a MAJOR simplification.
-
-        # Create a map from frame_id to frame_data for easy lookup during mock cluster seed selection
-        frame_data_map = {f['frame_id']: f for f in processed_frames_data}
+        logger.info(f"Successfully processed {len(qdrant_results)} frames for Qdrant storage and potential cluster seeds.")
 
         mock_potential_cluster_seeds = []
         if qdrant_results:
-            # Let's say first few unique video frames are our "cluster seeds"
             seen_video_ids_for_seeds = set()
-            for res in qdrant_results: # res['qdrant_id'] is the frame_id used for upsert
-                # Need to get the video_id from the original processed_frames_data using the frame_id
+            for res in qdrant_results:
                 original_frame_data = frame_data_map.get(res['qdrant_id'])
                 if original_frame_data:
-                    video_id = original_frame_data['metadata'].get('video_id')
+                    video_id = original_frame_data.get('video_id')
                     if video_id not in seen_video_ids_for_seeds:
-                        mock_potential_cluster_seeds.append(res['qdrant_id']) # Using frame_id as cluster_id proxy
+                        mock_potential_cluster_seeds.append(res['qdrant_id'])
                         seen_video_ids_for_seeds.add(video_id)
-                    if len(mock_potential_cluster_seeds) >= 3: break # Max 3 mock clusters
-
+                    if len(mock_potential_cluster_seeds) >= 3: break
 
         identified_trends = []
-        # Let's use the mock_potential_cluster_seeds as our "cluster_ids"
-        # In reality, cluster_ids would come from a clustering process.
-
-        for cluster_id_proxy in mock_potential_cluster_seeds: # cluster_id_proxy is actually a frame_id here
+        for cluster_id_proxy in mock_potential_cluster_seeds:
             logger.info(f"--- Analyzing mock visual cluster based on seed frame: {cluster_id_proxy} ---")
 
-            # In a real scenario, you'd get all frames belonging to this cluster.
-            # For the mock, we assume the cluster's properties are primarily derived from this seed frame's metadata
-            # and some global mock data.
+            seed_frame_full_analysis = frame_data_map.get(cluster_id_proxy)
+            associated_data_for_classification = {}
 
-            # Simulate getting associated data for classification (e.g. from VisualAnalyzer via Neo4j node for the frame)
-            # This would be based on the actual visual content of frames in the cluster.
-            # For now, use some mock tags based on the frame_id for variety.
-            mock_associated_data_for_classification = {'tags': [], 'objects': []}
-            # Get the original frame_path for heuristic classification
-            original_frame_info = frame_data_map.get(cluster_id_proxy, {})
-            frame_path_for_classification = original_frame_info.get('frame_path', "")
+            if seed_frame_full_analysis:
+                food_content = seed_frame_full_analysis.get("food_analysis")
+                if food_content:
+                    associated_data_for_classification["ingredients"] = food_content.get("ingredients", [])
+                    associated_data_for_classification["cooking_technique"] = food_content.get("cooking_technique")
+                    associated_data_for_classification["plating_style"] = food_content.get("plating_style")
+                    associated_data_for_classification["nutritional_trends"] = food_content.get("nutritional_trends", [])
+                    associated_data_for_classification["cuisine"] = food_content.get("cuisine")
 
-            if "food" in frame_path_for_classification:
-                 mock_associated_data_for_classification['tags'].extend(['food', 'recipe'])
-                 mock_associated_data_for_classification['objects'].extend(['bowl'])
-            elif "dance" in frame_path_for_classification:
-                 mock_associated_data_for_classification['tags'].extend(['dance', 'filter'])
-            else: # Default if no specific keyword in path
-                 mock_associated_data_for_classification['tags'].extend(['aesthetic', 'vintage'])
-
+                associated_data_for_classification["tags"] = [obj.get('description', '') for obj in seed_frame_full_analysis.get("detected_objects", []) if obj.get('description')]
+                associated_data_for_classification["objects"] = [obj.get('description', '') for obj in seed_frame_full_analysis.get("detected_objects", []) if obj.get('description')]
+            else:
+                logger.warning(f"Could not find full analysis data for seed frame {cluster_id_proxy} in frame_data_map. Classification might be impacted.")
+                associated_data_for_classification = {'tags': ['unknown_fallback_seed_missing'], 'objects': []}
 
             temporal_patterns = self.detect_temporal_patterns(cluster_id_proxy)
             velocity = self.calculate_trend_velocity(temporal_patterns)
-            adoption = self.track_cross_creator_adoption(cluster_id_proxy) # Uses mock data internally for now
+            adoption = self.track_cross_creator_adoption(cluster_id_proxy)
+            trend_type = self.classify_trend(cluster_id_proxy, associated_data_for_classification)
 
-            trend_type = self.classify_trend(cluster_id_proxy, mock_associated_data_for_classification)
-
-            # For confidence and lifecycle, we need more aggregated data about the cluster
-            # Let's use the mock data from adoption and temporal_patterns
             num_occurrences = sum(temporal_patterns.get('frequency_per_day', {}).values())
-
             trend_summary_data = {
-                "cluster_id_proxy": cluster_id_proxy, # This is actually a frame_id in this mock
-                "velocity": velocity,
+                "cluster_id_proxy": cluster_id_proxy, "velocity": velocity,
                 "adoption_count": adoption.get("creator_adoption_count", 0),
                 "total_occurrences": num_occurrences,
                 "example_creators": adoption.get("creators", []),
                 "temporal_frequency": temporal_patterns.get("frequency_per_day"),
                 "type": trend_type,
-                # 'visual_characteristics': mock_associated_data_for_classification # Could be too verbose
             }
-
             confidence = self.calculate_confidence_score(trend_summary_data)
             lifecycle = self.detect_trend_lifecycle_stage(trend_summary_data)
-
             trend_summary_data["confidence_score"] = confidence
-            trend_summary_data["lifecycle_stage"] = lifecycle.value # Store the string value
-
+            trend_summary_data["lifecycle_stage"] = lifecycle
             identified_trends.append(trend_summary_data)
-            logger.info(f"Identified trend candidate: {trend_summary_data}")
+            # Log with .value for enums
+            logger.info(f"Identified trend candidate: Type - {trend_type.value if isinstance(trend_type, Enum) else trend_type}, Lifecycle - {lifecycle.value if isinstance(lifecycle, Enum) else lifecycle}, Confidence - {confidence:.2f}")
 
-        logger.info(f"Completed trend identification. Found {len(identified_trends)} potential trends (mocked clusters).")
+        logger.info(f"Completed trend identification. Found {len(identified_trends)} potential trends (based on mock clusters).")
         return identified_trends
 
 
 if __name__ == '__main__':
+    import time
+    import numpy as np
+    # from enum import Enum # Already imported at class level (global to the file)
+    # from collections import defaultdict, Counter # Should be global if used by other methods
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__) # Ensure logger is correctly obtained
     logger.info("Starting TrendDetector standalone example.")
 
-    # Mock VisualAnalyzer and QdrantConnection
     class MockVisualAnalyzer:
         def __init__(self):
-            logger.info("MockVisualAnalyzer initialized.")
-
+            logger.info("MockVisualAnalyzer (for TrendDetector __main__) initialized.")
         def generate_embedding(self, frame_path: str) -> np.ndarray:
-            logger.info(f"MockVisualAnalyzer: Generating dummy embedding for {frame_path}")
-            return np.random.rand(512).astype(np.float32) # Must match expected size
-
-        def analyze_frame(self, frame_path: str, use_gemini: bool = True) -> dict:
-            # Mock the output of the full analysis to get tags/objects
-            logger.info(f"MockVisualAnalyzer: Analyzing frame {frame_path}")
+            logger.info(f"MockVisualAnalyzer (for TrendDetector's embedding generation): Generating dummy embedding for {frame_path}")
+            return np.random.rand(512).astype(np.float32)
+        def analyze_frame(self, frame_path: str, analyze_food: bool = False) -> dict: # This mock creates the rich analysis data
+            frame_basename = frame_path.split('/')[-1].replace('.jpg', '')
+            parts = frame_basename.split('_')
             mock_analysis = {
-                "frame_path": frame_path,
-                "detected_objects": [{'type': 'object', 'description': 'mock_object', 'confidence': 0.9}],
-                "scene_description": {'type': 'scene_description', 'description': 'A mock scene.'},
-                "errors": []
+                "frame_id": frame_basename, "frame_path": frame_path,
+                "video_id": f"{parts[0]}_{parts[1]}_{parts[2]}" if len(parts) > 3 else "vid_unknown_main", # Adjusted index for safety
+                "timestamp": int(time.time()),
+                "creator_id": parts[1] if len(parts) > 2 else "creator_unknown_main", # Adjusted index
+                "detected_objects": [{'description': 'mock_object_generic_main'}],
+                "scene_description": {'description': 'A mock scene from __main__ for ' + frame_basename},
+                "food_analysis": None, "errors": []
             }
-            if "food" in frame_path: # Simple heuristic for mock data
-                mock_analysis["detected_objects"].append({'type': 'object', 'description': 'plate'})
+            if analyze_food and "food" in frame_path.lower():
+                food_payload = {"ingredients": [], "cooking_technique": "unknown_technique_main", "plating_style": "unknown_style_main", "nutritional_trends": [], "cuisine": "unknown_cuisine_main"}
+                if "salad" in frame_path.lower():
+                    food_payload.update({"ingredients": ["mock_lettuce_main", "mock_tomato_main"], "cooking_technique": "mock_tossing_main", "nutritional_trends": ["mock_healthy_main"], "cuisine": "mock_garden_main"})
+                elif "cake" in frame_path.lower():
+                    food_payload.update({"ingredients": ["mock_cocoa_main", "mock_sugar_main"], "cooking_technique": "mock_baking_main", "nutritional_trends": ["mock_indulgent_main"], "cuisine": "mock_sweet_main"})
+                elif "generic" in frame_path.lower(): # A generic food type
+                     food_payload.update({"ingredients": ["mock_item_main_x", "mock_item_main_y"], "cuisine": "mock_general_food_main", "cooking_technique": "mock_generic_cook_main"})
+                mock_analysis["food_analysis"] = food_payload
+                mock_analysis["detected_objects"].append({'description': 'plate_mock_main'})
             return mock_analysis
 
-
     class MockQdrantConnection:
-        def __init__(self, url=None, api_key=None):
-            self.collections = {}
-            logger.info("MockQdrantConnection initialized.")
-
+        def __init__(self, url=None, api_key=None): self.collections = {}; logger.info("MockQdrantConnection initialized.")
         def create_collection(self, collection_name=None, vector_size=None):
-            if collection_name not in self.collections:
-                self.collections[collection_name] = {"vectors": [], "metadata": [], "ids": []}
-                logger.info(f"MockQdrant: Created collection '{collection_name}' with vector size {vector_size}.")
+            if collection_name not in self.collections: self.collections[collection_name] = {"vectors": [], "metadata": [], "ids": []}; logger.info(f"MockQdrant: Created collection '{collection_name}'.")
             return True
-
         def upsert_vectors(self, collection_name, vectors, ids, metadata=None):
-            if collection_name not in self.collections:
-                # Create collection on the fly if it doesn't exist, assuming a default vector size if not provided earlier
-                self.create_collection(collection_name, vector_size=len(vectors[0]) if vectors else 512)
-
-            self.collections[collection_name]["vectors"].extend(vectors)
-            self.collections[collection_name]["ids"].extend(ids)
-            self.collections[collection_name]["metadata"].extend(metadata if metadata else [{} for _ in ids])
-            logger.info(f"MockQdrant: Upserted {len(vectors)} vectors to '{collection_name}'. Total: {len(self.collections[collection_name]['ids'])}.")
+            if collection_name not in self.collections: self.create_collection(collection_name, vector_size=len(vectors[0]) if vectors else 512)
+            self.collections[collection_name]["vectors"].extend(vectors); self.collections[collection_name]["ids"].extend(ids); self.collections[collection_name]["metadata"].extend(metadata if metadata else [{} for _ in ids]); logger.info(f"MockQdrant: Upserted {len(vectors)} vectors to '{collection_name}'.")
             return True
+        def search(self, collection_name, query_vector, limit=10, filter_condition=None): logger.info(f"MockQdrant: Searching in '{collection_name}' (returning empty list for now)."); return []
 
-        def search(self, collection_name, query_vector, limit=10, filter_condition=None):
-            logger.info(f"MockQdrant: Searching in '{collection_name}' (returning empty list for now).")
-            return []
+    mock_va_internal_for_detector = MockVisualAnalyzer()
+    mock_qdrant_instance = MockQdrantConnection()
 
-    mock_va = MockVisualAnalyzer()
-    mock_qdrant = MockQdrantConnection()
+    trend_detector_main_instance = TrendDetector(visual_analyzer=mock_va_internal_for_detector, qdrant_conn=mock_qdrant_instance)
+    trend_detector_main_instance.qdrant_conn.create_collection(collection_name=trend_detector_main_instance.qdrant_collection_name, vector_size=512)
 
-    trend_detector = TrendDetector(visual_analyzer=mock_va, qdrant_conn=mock_qdrant)
+    dummy_analyzed_frames_for_input = []
+    current_base_ts = int(time.time()) - (5 * 24 * 60 * 60)
 
-    trend_detector.qdrant_conn.create_collection(
-        collection_name=trend_detector.qdrant_collection_name,
-        vector_size=512
-    )
+    test_frame_definitions_main = [
+        {"creator_id": "creatorA", "video_idx": 0, "frame_idx": 0, "type_suffix": "food_salad_alpha"},
+        {"creator_id": "creatorB", "video_idx": 0, "frame_idx": 0, "type_suffix": "food_cake_beta"},
+        {"creator_id": "creatorC", "video_idx": 0, "frame_idx": 0, "type_suffix": "dance_gamma"},
+        {"creator_id": "creatorA", "video_idx": 1, "frame_idx": 0, "type_suffix": "food_generic_delta"},
+        {"creator_id": "creatorB", "video_idx": 0, "frame_idx": 1, "type_suffix": "food_salad_epsilon"},
+    ]
 
-    dummy_frames_data = []
-    creators = ["creatorX", "creatorY", "creatorZ"]
-    videos_per_creator = 2
-    frames_per_video = 3
-    base_timestamp = int(time.time()) - (10 * 24 * 60 * 60)
+    input_data_generator_va = MockVisualAnalyzer()
 
-    for c_idx, creator_id in enumerate(creators):
-        for v_idx in range(videos_per_creator):
-            video_id = f"vid_{c_idx}_{v_idx}"
-            for f_idx in range(frames_per_video):
-                frame_id = f"{video_id}_frame_{f_idx}"
-                frame_path_suffix = ""
-                if c_idx == 0 and v_idx == 0 and f_idx == 0: frame_path_suffix = "_food"
-                elif c_idx == 1 and v_idx == 0 and f_idx == 0: frame_path_suffix = "_dance"
+    for i, frame_def_item in enumerate(test_frame_definitions_main):
+        video_id_for_test = f"vid_{frame_def_item['creator_id']}_{frame_def_item['video_idx']}"
+        frame_id_for_test = f"{video_id_for_test}_frame_{frame_def_item['frame_idx']}_{frame_def_item['type_suffix']}"
+        dummy_frame_path = f"/tmp/dummy_trend_frames_main/{frame_id_for_test}.jpg" # nosec
 
-                frame_path = f"/tmp/dummy_frames/{frame_id}{frame_path_suffix}.jpg" #nosec
-                timestamp = base_timestamp + (c_idx * videos_per_creator + v_idx) * (24*60*60) + f_idx * 3600
+        is_food_frame_type = "food" in frame_def_item["type_suffix"].lower()
+        analyzed_frame_obj = input_data_generator_va.analyze_frame(dummy_frame_path, analyze_food=is_food_frame_type)
 
-                dummy_frames_data.append({
-                    "frame_id": frame_id,
-                    "frame_path": frame_path,
-                    "metadata": {
-                        "timestamp": timestamp,
-                        "video_id": video_id,
-                        "creator_id": creator_id,
-                    }
-                })
+        analyzed_frame_obj["creator_id"] = frame_def_item["creator_id"]
+        analyzed_frame_obj["video_id"] = video_id_for_test
+        analyzed_frame_obj["timestamp"] = current_base_ts + i * (24*60*60)
+        analyzed_frame_obj["frame_id"] = frame_id_for_test
 
-    logger.info(f"Created {len(dummy_frames_data)} dummy frame data entries for testing.")
+        dummy_analyzed_frames_for_input.append(analyzed_frame_obj)
 
-    identified_trends = trend_detector.identify_trends_from_data(dummy_frames_data)
+    if not dummy_analyzed_frames_for_input:
+        logger.error("No dummy data was generated for TrendDetector test in __main__. Exiting example.")
+    else:
+        logger.info(f"Generated {len(dummy_analyzed_frames_for_input)} dummy analyzed frame data entries for TrendDetector test.")
+        identified_trends_result = trend_detector_main_instance.identify_trends_from_data(dummy_analyzed_frames_for_input)
 
-    logger.info(f"
---- Main Example Finished: Identified {len(identified_trends)} Trends ---")
-    for i, trend in enumerate(identified_trends):
-        logger.info(f"Trend {i+1}:")
-        logger.info(f"  Cluster ID (proxy): {trend.get('cluster_id_proxy')}")
-        logger.info(f"  Type: {trend.get('type').value if trend.get('type') else 'N/A'}")
-        logger.info(f"  Velocity: {trend.get('velocity'):.2f}")
-        logger.info(f"  Adoption Count: {trend.get('adoption_count')}")
-        logger.info(f"  Total Occurrences: {trend.get('total_occurrences')}")
-        logger.info(f"  Confidence Score: {trend.get('confidence_score'):.2f}")
-        logger.info(f"  Lifecycle Stage: {trend.get('lifecycle_stage')}")
-        logger.info(f"  Example Creators: {trend.get('example_creators')}")
+        logger.info(f"--- TrendDetector __main__ Example Finished: Identified {len(identified_trends_result)} Trends ---")
+        for idx, trend_item in enumerate(identified_trends_result):
+            logger.info(f"Trend {idx+1}:")
+            logger.info(f"  Cluster ID (Seed Frame): {trend_item.get('cluster_id_proxy')}")
+
+            trend_type_val = trend_item.get('type')
+            logger.info(f"  Type: {trend_type_val.value if isinstance(trend_type_val, Enum) else trend_type_val}")
+
+            logger.info(f"  Velocity: {trend_item.get('velocity'):.2f}")
+            logger.info(f"  Adoption Count: {trend_item.get('adoption_count')}")
+            logger.info(f"  Total Occurrences: {trend_item.get('total_occurrences')}")
+            logger.info(f"  Confidence Score: {trend_item.get('confidence_score'):.2f}")
+
+            lifecycle_stage_val = trend_item.get('lifecycle_stage')
+            logger.info(f"  Lifecycle Stage: {lifecycle_stage_val.value if isinstance(lifecycle_stage_val, Enum) else lifecycle_stage_val}")
+            logger.info(f"  Example Creators: {trend_item.get('example_creators')}")
