@@ -3,6 +3,7 @@
 from .trend_detector import TrendDetector, TrendType, TrendLifecycleStage
 from .trend_predictor import TrendPredictor
 from .food_analyzer import FoodAnalyzer
+from .marketing_insights import MarketingInsights
 
 __all__ = [
     "TrendDetector",
@@ -10,4 +11,5 @@ __all__ = [
     "TrendLifecycleStage",
     "TrendPredictor",
     "FoodAnalyzer",
+    "MarketingInsights",
 ]
